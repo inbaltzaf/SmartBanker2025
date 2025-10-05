@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Smart Banker Assistant</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <h2>לקוחות</h2>
+      <ul id="customer-list"></ul>
+    </aside>
+    <main class="content">
+      <header class="header">
+        <h1>עוזר הבנקאי החכם</h1>
+        <button id="tts-toggle">🔊 קריינות</button>
+      </header>
+
+      <section id="customer-card" class="card"></section>
+
+      <section class="chat">
+        <div id="messages" class="messages"></div>
+        <form id="chat-form">
+          <input id="chat-input" placeholder="הקלד/י הודעה ללקוח..." />
+          <button type="submit">שלח</button>
+        </form>
+      </section>
+
+      <section class="suggestions card">
+        <h3>הצעות פעולה</h3>
+        <ul id="suggestions"></ul>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const state = {
+      selectedCustomerId: null,
+      tts: false,
+    };
+
+    const voicesReady = new Promise(resolve => {
+      if (speechSynthesis.getVoices().length) return resolve();
+      speechSynthesis.onvoiceschanged = resolve;
+    });
+
+    function speak(text){
+      if (!state.tts || !window.speechSynthesis) return;
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = 'he-IL';
+      speechSynthesis.speak(utter);
+    }
+
+    document.getElementById('tts-toggle').addEventListener('click', () => {
+      state.tts = !state.tts;
+      document.getElementById('tts-toggle').textContent = state.tts ? '🔇 השתק' : '🔊 קריינות';
+    });
+
+    async function loadCustomers(){
+      const res = await fetch('/api/customers');
+      const customers = await res.json();
+      const ul = document.getElementById('customer-list');
+      ul.innerHTML = '';
+      customers.forEach(c => {
+        const li = document.createElement('li');
+        li.textContent = `${c.name} (${c.id || c.customerId || ''})`;
+        li.addEventListener('click', () => selectCustomer(c.id || c.customerId));
+        ul.appendChild(li);
+      });
+    }
+
+    async function selectCustomer(id){
+      state.selectedCustomerId = id;
+      const [cRes, convRes] = await Promise.all([
+        fetch(`/api/customers/${id}`),
+        fetch(`/api/conversations/${id}`)
+      ]);
+      const c = await cRes.json();
+      const conv = await convRes.json();
+
+      renderCustomer(c);
+      renderMessages(conv.messages || []);
+      document.getElementById('suggestions').innerHTML = '';
+    }
+
+    function renderCustomer(c){
+      const el = document.getElementById('customer-card');
+      el.innerHTML = `
+        <h3>${c.name}</h3>
+        <div class="grid">
+          <div><strong>סגמנט:</strong> ${c.segment || '-'}</div>
+          <div><strong>יתרה:</strong> ${c.balance ?? '-'}</div>
+          <div><strong>מוצרים:</strong> ${(c.products || []).join(', ')}</div>
+          <div><strong>ציון סיכון:</strong> ${c.riskScore ?? '-'}</div>
+        </div>
+        <div class="events">
+          <h4>אירועים אחרונים</h4>
+          <ul>
+            ${(c.recentEvents || []).slice(0,5).map(e => `<li>${e.date || ''} - ${e.title || e.type || ''}</li>`).join('')}
+          </ul>
+        </div>
+      `;
+    }
+
+    function renderMessages(msgs){
+      const el = document.getElementById('messages');
+      el.innerHTML = '';
+      msgs.forEach(m => addMessage(m.role, m.content));
+    }
+
+    function addMessage(role, text){
+      const el = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = `msg ${role}`;
+      div.textContent = text;
+      el.appendChild(div);
+      el.scrollTop = el.scrollHeight;
+      if(role === 'assistant') speak(text);
+    }
+
+    document.getElementById('chat-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('chat-input');
+      const content = input.value.trim();
+      if (!content) return;
+      addMessage('user', content);
+      input.value = '';
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customerId: state.selectedCustomerId,
+          messages: [{ role: 'user', content }]
+        })
+      });
+      const data = await res.json();
+      addMessage('assistant', data.reply);
+
+      const ul = document.getElementById('suggestions');
+      ul.innerHTML = '';
+      (data.suggestions || []).forEach(s => {
+        const li = document.createElement('li');
+        li.innerHTML = `<strong>${s.title}</strong> — ${s.reason} <button>בצע</button><div class="action">${s.action}</div>`;
+        li.querySelector('button').addEventListener('click', () => speak(s.action));
+        ul.appendChild(li);
+      });
+    });
+
+    loadCustomers();
+  </script>
+</body>
+</html>
